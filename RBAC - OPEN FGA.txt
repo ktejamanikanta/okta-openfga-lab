@@ -1,0 +1,121 @@
+====================================================================
+IAM HANDS-ON LAB: OKTA + OPENFGA
+Requirements, Setup, and All Commands
+====================================================================
+
+-----------------------------------------
+REQUIREMENTS
+-----------------------------------------
+1. Okta Developer Account (Free trial works).
+2. Windows computer with Windows Terminal.
+3. WSL (Windows Subsystem for Linux) with Ubuntu installed.
+4. Docker installed inside WSL.
+5. OpenFGA CLI installed.
+6. A text editor (nano is built into Ubuntu).
+
+-----------------------------------------
+PHASE 1: OKTA SETUP (RBAC)
+-----------------------------------------
+Goal: Create a group and ensure the ID Token contains group info.
+
+1. Go to Okta Admin > Directory > Groups. Create "Report-Viewers".
+2. Assign your test user to "Report-Viewers".
+3. Go to Applications > Create App Integration > OIDC > Web Application. 
+   Name it (e.g., "My Python App").
+4. Go to Security > API > Authorization Servers > default > Claims.
+5. Click "Add Claim":
+   - Name: groups
+   - Include in token type: ID Token (Always)
+   - Value type: Groups
+   - Filter: Matches regex .*
+6. Test in the "Token Preview" tab to ensure "groups" appears in the JSON.
+
+-----------------------------------------
+PHASE 2: DOCKER & SERVER SETUP (WSL)
+-----------------------------------------
+Open WSL (Ubuntu terminal).
+
+# 1. Install Docker (Only needed once)
+sudo apt update
+sudo apt install docker.io -y
+
+# 2. Start Docker (Run this every time you restart WSL)
+sudo service docker start
+
+# 3. Migrate/Initialize the Database (Only needed once)
+# This creates the tables so the SQLite database doesn't error out.
+sudo docker run --rm -v /tmp:/tmp openfga/openfga migrate --datastore-engine sqlite --datastore-uri 'file:/tmp/openfga.db'
+
+# 4. Start the OpenFGA Server
+# LEAVE THIS TERMINAL WINDOW OPEN AND RUNNING!
+sudo docker run -p 8080:8080 -v /tmp:/tmp openfga/openfga run --datastore-engine sqlite --datastore-uri 'file:/tmp/openfga.db'
+
+-----------------------------------------
+PHASE 3: OPENFGA CLI & MODEL
+-----------------------------------------
+Open a SECOND WSL terminal tab.
+
+# 1. Install the OpenFGA CLI
+curl -fL -o fga.tar.gz "https://github.com/openfga/cli/releases/download/v0.7.20/fga_0.7.20_linux_amd64.tar.gz"
+tar -xzf fga.tar.gz
+sudo mv fga /usr/local/bin/
+
+# 2. Verify installation
+fga version
+
+# 3. Create the Store
+fga store create --name "demo-store"
+# IMPORTANT: Copy the "id" returned by this command. We will call it <STORE_ID>.
+
+# 4. Create the Model File
+nano model.fga
+
+# PASTE THE FOLLOWING INSIDE NANO:
+model
+  schema 1.1
+
+type user
+
+type document
+  relations
+    define owner: [user]
+    define can_view: [user, user:*] or can_edit
+    define can_edit: owner
+
+# Save and Exit Nano: Press Ctrl+O, hit Enter, then press Ctrl+X.
+
+# 5. Write the Model to the Store
+fga model write --store-id <STORE_ID> --file model.fga
+
+-----------------------------------------
+PHASE 4: DATA & VERIFICATION
+-----------------------------------------
+
+# 1. Add a relationship (Tuple)
+# Make "testuser1" the owner of "document:123"
+fga tuple write --store-id <STORE_ID> user:testuser1 owner document:123
+
+# 2. Test Scenario A (The Owner)
+# Check if testuser1 can edit the document. Should return {"allowed":true}
+fga query check --store-id <STORE_ID> user:testuser1 can_edit document:123
+
+# 3. Test Scenario B (The Stranger)
+# Check if bob can edit the document. Should return {"allowed":false}
+fga query check --store-id <STORE_ID> user:bob can_edit document:123
+
+-----------------------------------------
+TROUBLESHOOTING & TIPS
+-----------------------------------------
+Problem: The fga command hangs and does nothing.
+Solution: Make sure the Server terminal (Phase 2, Step 4) is running. 
+Then set the API URL:
+export FGA_API_URL=http://localhost:8080
+
+Problem: "Port is already allocated" when starting Docker.
+Solution: The server is already running in another tab. Press Ctrl+C in that tab, or run:
+sudo docker ps
+sudo docker kill <CONTAINER_ID>
+
+Problem: "no such table: store" error in server logs.
+Solution: You skipped the Migration command. Stop the server, run the migrate 
+command (Phase 2, Step 3), then start the server again.
